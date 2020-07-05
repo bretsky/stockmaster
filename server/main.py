@@ -89,6 +89,9 @@ def authenticate(email, password):
 	return check_hash(password, hashed, 255)
 
 def make_buy_order(user, symbol, volume, price, expiry):
+	balance = select_one("TradingUsers", ["Balance"], ID=user)
+	if balance < volume * price:
+		return "Insufficient balance"
 	now = datetime.datetime.utcnow()
 	for row in select_all_ordered("Sells", ["TradingUser", "Volume", "Price", "ID"], ["Price ASC", "OrderDate ASC"], Symbol=("=", symbol), Price=("<=", price), ExpiryDate=(">", now)):
 		if row[1] > volume:
@@ -96,22 +99,32 @@ def make_buy_order(user, symbol, volume, price, expiry):
 			sell_position(row[0], symbol, volume, row[2])
 			make_transaction(user, row[0], symbol, row[2], volume, now)
 			update_row("Sells", row[3], Volume=row[1] - volume)
-			return
+			change_balance(user, -volume * row[2])
+			change_balance(row[0], volume * row[2])
+			return "Success"
 		elif row[1] == volume:
 			make_position(user, symbol, volume, row[2], now)
 			sell_position(row[0], symbol, volume, row[2])
 			make_transaction(user, row[0], symbol, row[2], volume, now)
 			delete_row("Sells", ID=row[3])
-			return
+			change_balance(user, -volume * row[2])
+			change_balance(row[0], volume * row[2])
+			return "Success"
 		else:
 			volume -= row[1]
 			make_position(user, symbol, row[1], row[2], now)
 			sell_position(row[0], symbol, row[1], row[2])
 			make_transaction(user, row[0], symbol, row[2], row[1], now)
 			delete_row("Sells", ID=row[3])
+			change_balance(user, -row[1] * row[2])
+			change_balance(row[0], row[1] * row[2])
 	insert_row("Buys", TradingUser=user, Symbol=symbol, Volume=volume, Price=price, OrderDate=now, ExpiryDate=expiry)
+	return "Success"
 
 def make_sell_order(user, symbol, volume, price, expiry):
+	positions = select_all("Positions", ["Volume"], ID=user, Symbol=symbol)
+	if sum(positions) < volume:
+		return "Insufficient shares"
 	now = datetime.datetime.utcnow()
 	for row in select_all_ordered("Buys", ["TradingUser", "Volume", "Price", "ID"], ["Price DESC", "OrderDate ASC"], Symbol=("=", symbol), Price=(">=", price), ExpiryDate=(">", now)):
 		if row[1] > volume:
@@ -119,24 +132,30 @@ def make_sell_order(user, symbol, volume, price, expiry):
 			sell_position(user, symbol, volume, row[2])
 			make_transaction(row[0], user, symbol, row[2], volume, now)
 			update_row("Buys", row[3], Volume=row[1] - volume)
-			return
+			change_balance(user, volume * row[2])
+			change_balance(row[0], -volume * row[2])
+			return "Success"
 		elif row[1] == volume:
 			make_position(row[0], symbol, volume, row[2], now)
 			sell_position(user, symbol, volume, row[2])
 			make_transaction(row[0], user, symbol, row[2], volume, now)
 			delete_row("Buys", ID=row[3])
-			return
+			change_balance(user, volume * row[2])
+			change_balance(row[0], -volume * row[2])
+			return "Success"
 		else:
 			volume -= row[1]
 			make_position(row[0], symbol, row[1], row[2], now)
 			sell_position(user, symbol, row[1], row[2])
 			make_transaction(row[0], user, symbol, row[2], row[1], now)
 			delete_row("Buys", ID=row[3])
+			change_balance(user, row[1] * row[2])
+			change_balance(row[0], -row[1] * row[2])
 	insert_row("Sells", TradingUser=user, Symbol=symbol, Volume=volume, Price=price, OrderDate=now, ExpiryDate=expiry)
+	return "Success"
 
 def get_all_columns(table):
 	return select_all("INFORMATION_SCHEMA.COLUMNS", "*", TABLE_NAME=['=', table])
-
 
 def sell_position(user, symbol, volume, sell_price):
 	for row in select_all_ordered("Positions", ["Volume", "ID"], ["OpenPrice ASC"], Symbol=("=", symbol), TradingUser=("=", user)):
@@ -155,6 +174,10 @@ def make_position(user, symbol, volume, open_price, open_date):
 
 def make_transaction(buyer, seller, symbol, price, volume, date):
 	insert_row("Transactions", Buyer=buyer, Seller=seller, Symbol=symbol, Price=price, Volume=volume, Date=date)
+
+def change_balance(user, amount):
+	current_balance = select_one("TradingUsers", ["Balance"], ID=user)[0]
+	update_row("TradingUsers", user, Balance=current_balance + amount)
 
 def get_user_id(user_email):
 	return select_one("TradingUsers", ["ID"], Email=["=", user_email])[0]
